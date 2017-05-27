@@ -1,6 +1,6 @@
 #! /usr/bin/env python3
 # _*_ coding: utf-8 _*_
-import logging, asyncio
+import asyncio, logging
 import aiomysql
 
 __author__ = "JS"
@@ -11,44 +11,54 @@ def log(sql, args=()):
 async def create_pool(loop, **kw):
 	logging.info('Create database connection pool....')
 	global __pool
-	__pool = yield from aiomysql.create_pool(
-		host 	   = kw.get('host', 'localhost'),
+
+	__pool = await aiomysql.create_pool(
+		host 	   = kw.get('host', '127.0.0.1'),
 		port 	   = kw.get('port', 3306),
 		user 	   = kw['user'],
 		password   = kw['password'],
-		db         = kw['db'],
+		db         = kw['database'],
 		charset    = kw.get('charset', 'utf8'),
 		autocommit = kw.get('autocommit', True),
 		maxsize    = kw.get('maxsize', 10),
 		minsize    = kw.get('minsize', 1),
 		loop       = loop
 	)
+
+
+	
+# async def destory_pool(): #销毁连接池
+# 	global __pool
+# 	if __pool is not None:
+# 		__pool.close()
+# 		await  __pool.wait_closed()
+
 async def select(sql, args, size=None):
 	log(sql, args)
 	global __pool
-	with (yield from __pool) as conn:
-		cur = yield from conn.cursor(aiomysql.DictCursor)
-		yield from cur.execute(sql.replace('?', '%s'), args or ())
+	with (await __pool) as conn:
+		cur = await conn.cursor(aiomysql.DictCursor)
+		await cur.execute(sql.replace('?', '%s'), args or ())
 		if size:
-			rs = yield from cur.fetchmany(size)
+			rs = await cur.fetchmany(size)
 		else:
-			rs = yield from cur.fetchall()
-		yield from cur.close()
-		logging.info('rows returned: %s', % len(rs))
+			rs = await cur.fetchall()
+		await cur.close()
+		logging.info('rows returned: %s' % len(rs))
 		return rs
 async def execute(sql, args):
 	log(sql)
-	with (yield from __pool) as conn:
+	with (await __pool) as conn:
 		try:
-			cur=yield from conn.cursor()
-			yield from cur.execute(sql.replace('?', '%s'), args)
+			cur=await conn.cursor()
+			await cur.execute(sql.replace('?', '%s'), args)
 			affected = cur.rowcount
-			yield from cur.close()
+			await cur.close()
 		except BaseException as e:
 			raise
 		return affected
 
-def create_args_string(nam):
+def create_args_string(num):
 	L = []
 	for n in range(num):
 		L.append('?')
@@ -89,7 +99,7 @@ class TextField(Field):
 		
 		
 		
-class MoudelMetaclass(type):
+class ModelMetaclass(type):
 		"""docstring for MoudelMetaclass"""
 		def __new__(cls, name, bases, attrs):
 			#排除Model本身
@@ -104,7 +114,7 @@ class MoudelMetaclass(type):
 			primaryKey = None
 			for k, v in attrs.items():
 				if isinstance(v, Field):
-					logging.info('found mapping: %s ==> $s' % (k, v))
+					logging.info('found mapping: %s ==> %s' % (k, v))
 					mappings[k] = v
 					if v.primary_key:
 						#找到主键
@@ -112,7 +122,7 @@ class MoudelMetaclass(type):
 							raise RuntimeError('Duplicate primary key for field: %s' % k)
 						primaryKey = k
 					else:
-						field.append(k)
+						fields.append(k)
 			if not primaryKey:
 				raise RuntimeError('Primary key not found.')
 			for k in mappings.keys():
@@ -195,7 +205,7 @@ class Model (dict, metaclass=ModelMetaclass):
 	async def save(self):
 		args = list(map(self.getValueOrDefault, self.__fields__))
 		args.append(self.getValueOrDefault(self.__primary_key__))
-		rows = yield from execute(self.__insert__, args)
+		rows = await execute(self.__insert__, args)
 		if rows != 1:
 			logging.warn('Faild to insert record: affected rows: %s' % rows)
 
@@ -211,3 +221,32 @@ class Model (dict, metaclass=ModelMetaclass):
 		rows = await execute(self.__delete__, args)
 		if rows != 1:
 			logging.warn('Failed to remove by primary key: affected rows %s' % rows)
+
+if __name__ == "__main__":
+	# from models import User, Blog, Comment
+	class User(Model):
+		"""docstring for User"""
+		__table__ = 'users'
+		id        = StringField(primary_key=True, default="123", ddl='varchar(50)')
+		email     = StringField(ddl='varchar(50)')
+		passwd    = StringField(ddl='varchar(50)')
+		admin     = BooleanField()
+		name      = StringField(ddl='varchar(50)')
+		image     = StringField(ddl='varchar(500)')
+		create_at = FloatField(default=123)
+
+	loop = asyncio.get_event_loop()
+	async def test():
+
+		await create_pool(loop=loop, user='www-data', password='www-data', database='awesome')
+		u = User(name='Test', email='test@exemple.com', passwd='123456', image='about:blank')
+		print (u)
+		await u.save()
+		print(__pool)
+		await destory_pool()
+	loop = asyncio.get_event_loop()
+	loop.run_until_complete(test())
+	
+	loop.close()
+	if loop.is_closed():
+		sys.exit(0)
